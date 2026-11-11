@@ -14,37 +14,107 @@ library(arrow)
 ```
 
 ```{r}
-print(arrow::open_dataset("data/history.parquet", format = "parquet")$schema)
+#| cache: true
 
 markets <- read_parquet("data/markets.parquet")
 history <- read_parquet("data/history.parquet")
+groups <- read_parquet("data/groups.parquet")
+market_groups <- read_parquet("data/market_groups.parquet")
 
 joined <- history |>
-  left_join(markets |> select(market_id, outcome), by = "market_id") |>
+  left_join(markets |> select(market_id, outcome, resolved_at), by = "market_id") |>
   mutate(outcome_numeric = case_when(
     outcome == "YES" ~ 1,
     outcome == "NO" ~ 0,
     .default = NA_real_
   )) |>
+  mutate(days_until_resolution = as.integer(as.Date(resolved_at) - date)) |>
+  mutate(time_bucket = factor(
+    case_when(
+      days_until_resolution > 90 ~ "More than 90 days",
+      between(days_until_resolution, 31, 90) ~ "30 to 90 days",
+      between(days_until_resolution, 8, 30) ~ "7 to 30 days",
+      between(days_until_resolution, 1, 7) ~ "1 to 7 days",
+      days_until_resolution == 0 ~ "Final day"
+    ),
+    levels = c(
+      "More than 90 days",
+      "30 to 90 days",
+      "7 to 30 days",
+      "1 to 7 days",
+      "Final day"
+    ),
+    ordered = TRUE
+  )) |>
   mutate(absolute_error = abs(probability - outcome_numeric))
-
-nrow(joined)
-joined |>
-  summarise(
-    mean_absolute_error = mean(absolute_error),
-    median_absolute_error = median(absolute_error)
-  )
-
-groups <- read_parquet("data/groups.parquet")
-market_groups <- read_parquet("data/market_groups.parquet")
-
-glimpse(groups)
-head(groups, 5)
-nrow(groups)
-
-glimpse(market_groups)
-head(market_groups, 5)
-nrow(market_groups)
 ```
 
 `market_groups` links markets to topic slugs: a market can have multiple rows. `groups` is a lookup table keyed by `group_slug`, adding each topic's name, broad category, and market count.
+
+```{r}
+accuracy <- joined |>
+  group_by(time_bucket) |>
+  summarise(
+    mean_absolute_error = mean(absolute_error),
+    snapshots = n(),
+    .groups = "drop"
+  )
+
+print(accuracy)
+
+accuracy |>
+  ggplot(aes(x = time_bucket, y = mean_absolute_error, group = 1)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Prediction markets get smarter near the deadline",
+    subtitle = "Mean absolute error in Manifold Markets forecasts, by days remaining",
+    x = "Time until resolution",
+    y = "Mean absolute error"
+  )
+```
+
+```{r}
+joined |>
+  filter(days_until_resolution == 0) |>
+  ggplot(aes(x = probability)) +
+  geom_histogram(binwidth = 0.05, boundary = 0) +
+  labs(
+    x = "Forecast probability",
+    y = "Number of snapshots"
+  )
+```
+
+```{r}
+calibration <- joined |>
+  filter(days_until_resolution == 0) |>
+  mutate(probability_bin = cut(
+    probability,
+    breaks = seq(0, 1, by = 0.1),
+    labels = paste0(seq(0, 90, by = 10), "-", seq(10, 100, by = 10), "%"),
+    include.lowest = TRUE
+  )) |>
+  group_by(probability_bin) |>
+  summarise(
+    predicted_probability = mean(probability),
+    actual_rate = mean(outcome_numeric),
+    n = n_distinct(market_id),
+    .groups = "drop"
+  )
+
+print(calibration)
+
+calibration |>
+  ggplot(aes(x = predicted_probability, y = actual_rate)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_line() +
+  geom_point(aes(size = n)) +
+  scale_x_continuous(labels = scales::label_percent(), limits = c(0, 1)) +
+  scale_y_continuous(labels = scales::label_percent(), limits = c(0, 1)) +
+  labs(
+    title = "Do final-day predictions match observed outcomes?",
+    x = "Mean predicted probability",
+    y = "Actual YES rate",
+    size = "Markets"
+  )
+```
