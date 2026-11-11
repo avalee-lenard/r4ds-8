@@ -13,3 +13,38 @@ library(tidyverse)
 library(arrow)
 ```
 
+```{r}
+print(arrow::open_dataset("data/history.parquet", format = "parquet")$schema)
+
+markets <- read_parquet("data/markets.parquet")
+history <- read_parquet("data/history.parquet")
+
+joined <- history |>
+  left_join(markets |> select(market_id, outcome), by = "market_id") |>
+  mutate(outcome_numeric = case_when(
+    outcome == "YES" ~ 1,
+    outcome == "NO" ~ 0,
+    .default = NA_real_
+  )) |>
+  mutate(absolute_error = abs(probability - outcome_numeric))
+
+nrow(joined)
+joined |>
+  summarise(
+    mean_absolute_error = mean(absolute_error),
+    median_absolute_error = median(absolute_error)
+  )
+
+groups <- read_parquet("data/groups.parquet")
+market_groups <- read_parquet("data/market_groups.parquet")
+
+glimpse(groups)
+head(groups, 5)
+nrow(groups)
+
+glimpse(market_groups)
+head(market_groups, 5)
+nrow(market_groups)
+```
+
+`market_groups` links markets to topic slugs: a market can have multiple rows. `groups` is a lookup table keyed by `group_slug`, adding each topic's name, broad category, and market count.
