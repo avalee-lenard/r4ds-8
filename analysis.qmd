@@ -1,0 +1,15 @@
+---
+title: "Prediction Markets"
+format: html
+author: "avalee lenard"
+execute:
+  echo: false
+---
+
+```{r}
+#| message: false
+
+library(tidyverse)
+library(arrow)
+```
+
